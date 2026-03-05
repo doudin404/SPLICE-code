@@ -1,0 +1,5 @@
+defaults:
+  - train: real
+  - fry: real
+  - ui: real
+  - data: real

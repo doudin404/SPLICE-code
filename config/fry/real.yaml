@@ -1,0 +1,8 @@
+data_path: D:\data\train_data
+batch_size: 64
+
+lr: 0.0001 #0.00001
+reg_weight: 1e-4
+#sigma_data:  0.2202 #0.33 # #0.33 #0.3142 0.4697
+gms_factor: 0.18 #0.2147 #0.2234
+shape_z_factor: 0.1901

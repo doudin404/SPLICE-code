@@ -1,0 +1,4 @@
+defaults:
+  - train: real
+  - fry: real
+

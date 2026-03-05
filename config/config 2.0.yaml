@@ -1,0 +1,3 @@
+defaults:
+  - data: real
+  - train: real 2.0
