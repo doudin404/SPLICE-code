@@ -1,22 +1,12 @@
 from __future__ import annotations
+from typing import Optional, Tuple
+
 import vtk
 import numpy as np
+import vtkmodules.util.numpy_support as numpy_support
+
 from ui import ui_utils
-import vtk.util.numpy_support as numpy_support
-from typing import (
-    Tuple,
-    List,
-    Union,
-    Callable,
-    Type,
-    Iterator,
-    Dict,
-    Set,
-    Optional,
-    Any,
-    Sized,
-    Iterable,
-)
+import constants
 
 class GaussianData:
 
@@ -53,32 +43,35 @@ class GaussianData:
         self.total_translate = mu - self.mu
         self.total_rotate = np.einsum('ab,bc->ac', transition.rotation, self.total_rotate)
 
-    def scale(self, transition: ui_utils.Transition):
-        """
-        Scales the GaussianData object from a specified origin.
-
-        Args:
-            transition (ui_utils.Transition): Contains the scale factor and the origin point for scaling.
-            - transition.scale: The uniform scaling factor.
-            - transition.transition_origin: The origin from which scaling is performed.
-        """
-        # Step 1: Translate the data such that the scaling origin becomes the new origin (move to origin).
-        if transition.transition_origin is not None:
-            mu_translated = self.mu_baked - transition.transition_origin
-
-            # Step 2: Apply the scaling factor.
-            scaled_mu = mu_translated * transition.scale
-            self.total_translate = scaled_mu + transition.transition_origin - self.mu
-
-        # Step 3: Apply the scaling to the eigenvectors as well (since they define the shape).
-        self.eigen = self.eigen * transition.scale
-
     def stretch(self, amount):
         scale = 0.9 if amount < 0 else 1 / .9
         self.eigen = self.eigen * scale
 
     def translate(self, transition: ui_utils.Transition):
         self.total_translate = self.total_translate + transition.translation
+
+    def scale(self, transition: ui_utils.Transition):
+        """
+        从指定原点缩放GaussianData对象。
+
+        Args:
+            transition (ui_utils.Transition): 包含缩放因子和缩放原点。
+            - transition.scale: 统一缩放因子。
+            - transition.transition_origin: 执行缩放的原点。
+        """
+        # 步骤1: 平移数据使缩放原点成为新的原点(移动到原点)。
+        if transition.transition_origin is not None:
+            mu_translated = self.mu_baked - transition.transition_origin
+
+            # 步骤2: 应用缩放因子。
+            scaled_mu = mu_translated * transition.scale
+            self.total_translate = scaled_mu + transition.transition_origin - self.mu
+
+        # 步骤3: 同时对特征向量应用缩放(因为它们定义了形状)。
+        self.eigen = self.eigen * transition.scale
+
+    def copy_selected(self, transition: ui_utils.Transition):
+        raise NotImplementedError("Copying is not implemented")
 
     def get_view_eigen(self):
         scale = (self.mu_baked ** 2).sum() / (self.mu ** 2).sum()
@@ -87,7 +80,7 @@ class GaussianData:
     def get_raw_data(self):
         # p = np.einsum('da,db->ba', self.p, self.total_rotate)
         p = np.einsum('ab,bc->ac', self.total_rotate, self.p.transpose()).transpose()
-        return self.phi,self.mu_baked, self.eigen, p
+        return self.phi, self.mu_baked, self.eigen, p
 
     def copy_data(self):
         return [item.copy() if type(item) is np.ndarray else item for item in self.get_raw_data()]
@@ -116,10 +109,6 @@ class GaussianData:
     @property
     def p(self) -> np.ndarray:
         return self.data[3]
-
-    @phi.setter
-    def phi(self, new_phi: np.ndarray):
-        self.data[0] = new_phi
 
     @mu.setter
     def mu(self, new_mu: np.ndarray):
@@ -152,15 +141,15 @@ class GaussianStatus(GaussianData):
 
     # copy_constructor
     def copy(self: GaussianStatus, render: vtk.vtkRenderer, view_style: ui_utils.ViewStyle,
-             gaussian_id = None, is_selected = None) -> GaussianStatus:
+             gaussian_id: Optional[Tuple[int, int]] = None, is_selected: Optional[bool] = None) -> GaussianStatus:
         if self.disabled:
             return self
         gaussian_id = self.gaussian_id if gaussian_id is None else gaussian_id
-        return GaussianStatus(self.copy_data(), gaussian_id, is_selected if is_selected is not None else self.is_selected, view_style, render, 1)
+        return GaussianStatus(self.copy_data(), gaussian_id, is_selected or self.is_selected, view_style, render, 1)
 
-    # @staticmethod
-    # def get_new_gaussian() -> vtk.vtkSphereSource:
-    #     return ui_utils.load_vtk_obj(f"{constants.DATA_ROOT}/ui_resources/simple_brick.obj")
+    @staticmethod
+    def get_new_gaussian() -> vtk.vtkSphereSource:
+        return ui_utils.load_vtk_obj(f"{constants.DATA_ROOT}/ui_resources/simple_brick.obj")
 
     def update_gaussian_transform(self, source):
         phi, mu, eigen, p = self.get_view_data()
@@ -214,6 +203,22 @@ class GaussianStatus(GaussianData):
         # self.mapper.SetInputConnection(source.GetOutputPort())
 
     def end_transition(self, transition: ui_utils.Transition) -> bool:
+        """
+        结束当前的变换操作并将最终的变换应用到高斯模型上。
+
+        此方法根据 `transition` 对象中指定的变换类型（平移、旋转或缩放）
+        调用相应的变换方法 (`translate` 或 `rotate`) 来更新高斯模型的最终状态。
+        注意：当前的实现中，缩放操作（Scaling）也会调用 `rotate` 方法。
+
+        TODO: Scaling 操作
+
+        Args:
+            transition: 包含变换类型和具体变换值的 `ui_utils.Transition` 对象。
+
+        Returns:
+            如果变换成功应用（即 `self.init_points` 不为 None 且变换类型有效），则返回 True，
+            否则返回 False。
+        """
         if self.init_points is None:
             return False
         if transition.transition_type is ui_utils.EditType.Translating:
@@ -225,6 +230,9 @@ class GaussianStatus(GaussianData):
         elif transition.transition_type is ui_utils.EditType.Scaling:
             self.scale(transition)
             return True
+        elif transition.transition_type is ui_utils.EditType.Copying:
+            self.copy_selected(transition)
+            return True
         return False
 
     def temporary_transition(self, transition: ui_utils.Transition) -> bool:
@@ -233,24 +241,24 @@ class GaussianStatus(GaussianData):
         source = self.mapper.GetInput()
         vs = self.init_points
 
+        # 平移
         if transition.transition_type is ui_utils.EditType.Translating:
-            # 平移操作
             vs = vs + transition.translation[None, :]
-
+        
+        # 旋转
         elif transition.transition_type is ui_utils.EditType.Rotating:
-            # 旋转操作
             vs = vs - transition.transition_origin[None, :]
             vs = np.einsum('ad,nd->na', transition.rotation, vs)
             vs = vs + transition.transition_origin[None, :]
         
+        # 缩放
         elif transition.transition_type is ui_utils.EditType.Scaling:
             vs = vs - (transition.transition_origin[None, :] if transition.transition_origin is not None else self.mu)
             vs = vs @ self.p.T
             vs = vs * transition.scale
             vs = vs @ self.p
             vs = vs + (transition.transition_origin[None, :] if transition.transition_origin is not None else self.mu)
-
-        # 更新点的数据
+        
         source.GetPoints().SetData(numpy_support.numpy_to_vtk(vs))
         return True
 
@@ -400,16 +408,12 @@ class GaussianStatus(GaussianData):
         return self.actor.GetMapper()
 
     def __init__(self, gaussian, gaussian_id: Tuple[int, int], is_selected: bool, view_style: ui_utils.ViewStyle,
-                 render: vtk.vtkRenderer,normalized_phi: float,  actor: Optional[vtk.vtkActor] = None):
+                 render: vtk.vtkRenderer, normalized_phi: float, actor: Optional[vtk.vtkActor] = None):
         self.view_style = view_style
         super(GaussianStatus, self).__init__(gaussian)
         self.gaussian_id = gaussian_id
         self.twin: Optional[GaussianStatus] = None
         self.init_points = None
-        self.actor = self.add_gaussian(render, actor)
-        self.is_selected = is_selected
-        self.included = True
-        self.set_color()
         if normalized_phi > 0.001 or actor is not None:
             self.actor = self.add_gaussian(render, actor)
             self.is_selected = is_selected

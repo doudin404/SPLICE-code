@@ -24,73 +24,139 @@ Through this architecture, SPLICE supports a wide range of intuitive part-level 
 * **Part Deletion & Duplication**
 * **Cross-Shape Part Mixing**
 ---
-## 🚀 Getting Started
 
-### 1. Data Preparation
+# 🚀 Getting Started
 
-Before training, you need to download the required dataset and set up the preprocessing tools.
+## Environment Configuration
 
-* Download the PartNet dataset (`data_v0`).
-* Download and install the `ManifoldPlus` executable.
-* Update the configuration file `config/data/real.yaml` with your local absolute or relative paths:
+Ensure you have Python installed, then run the following commands to set up your environment. This project uses PyTorch 2.6.0 with CUDA 12.6.
 
-```yaml
-partnet_path: /mnt/d/data_v0/data_v0/      # Path to the downloaded PartNet dataset
-manifold_plus_path: /mnt/d/data_v0/data_v0/ManifoldPlus.exe  # Path to the executable
-output_dir: /mnt/d/data_v0/data_v0_sf/     # Destination folder for preprocessed data
-```
-* Run the data preprocessing script. The processed geometry data will be saved directly to your specified `output_dir`
-
-``` Bash
-python data_prepare.py
-```
-### 2. Training
-The training pipeline is divided into two stages: training the main network and training the diffusion model.
-
-**Phase 1: Main Model Training**
-* Open `config/data/real.yaml` and update the data path to point to your preprocessed output directory:
-```yaml
-data_path: /mnt/d/data_v0/data_v0_sf/
-```
-* Run the primary training script. You can adjust other model hyperparameters directly in the YAML file. The checkpoint saving location and filename format can be configured via `ModelCheckpoint` within the training script.
-``` Bash
-python train_fry.py
-```
-### Download Pre-trained Models
-
-We provide pre-trained weights hosted on Hugging Face. You can easily download them directly into the `checkpoints` directory using the official CLI:
-
-1. Install the Hugging Face Hub library:
 ```bash
-pip install -U "huggingface_hub[cli]"
+# Core PyTorch installation
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126
+
+# Sparse convolution and PyTorch Lightning
+pip install spconv-cu120
+python -m pip install lightning
+
+# Torch Scatter
+pip install torch-scatter -f https://data.pyg.org/whl/torch-2.6.0+cu126.html
+
+# 3D processing, utilities, and logging
+pip install vtk==9.3.1
+pip install timm einops addict python-dotenv
+pip install hydra-core omegaconf trimesh h5py scipy 
+pip install pyvista scikit-image libigl wandb pynput
+
+# Flash Attention (requires packaging and ninja first)
+pip install packaging ninja
+pip install flash-attn --no-build-isolation
+
 ```
-2. Download the weights to the local ./checkpoints folder:
+
+## Dataset Preparation
+
+1. **Clone the Shape-As-Points repository** to get the dataset scripts:
+```bash
+git clone https://github.com/autonomousvision/shape_as_points.git
+cd shape_as_points
+bash scripts/download_shapenet.sh
+
+```
+
+
+2. **Download the datasets** and organize them into your `data/` directory:
+* Place the downloaded `shapenet_psr` dataset into `data/`.
+* Download the `PartNet` dataset and place it into `data/`.
+* Ensure `partnet_metadata.json` is located directly in the `data/` folder (or inside `data/shapenet/` depending on your specific code config).
+
+
+
+**Expected Directory Structure:**
+
+```text
+data/
+├── partnet_metadata.json
+├── shapenet/                  # From shapenet_psr
+│   ├── {shapenet_id_1}/
+│   │   └── psr.npz
+│   └── ...
+└── {partnet_id_1}/            # PartNet samples
+    ├── point_sample/
+    │   ├── pts-10000.txt
+    │   └── label-10000.txt
+    └── ...
+
+```
+
+## 🏋️ Training Pipeline
+
+The training process is divided into three sequential stages:
+
+1. **Stage 1: Base Model Training**
+Run the main training script. This will generate the initial model checkpoints.
+```bash
+python train.py
+
+```
+
+
+*Output:* Checkpoints will be saved in the `checkpoints_splice/` directory.
+2. **Stage 2: Generate Diffusion Training Data**
+Extract the features/data required to train the diffusion generative model.
+```bash
+python pred_diff.py
+
+```
+
+
+*Output:* Training data is exported to `export/prediff/`.
+3. **Stage 3: Diffusion Model Training**
+Train the diffusion model using the data generated in the previous step.
+```bash
+python traindiff.py
+
+```
+
+
+*Output:* Diffusion checkpoints will be saved in `checkpoints_splice_diff/`.
+
+## 📥 Pre-trained Models (Optional)
+
+If you want to skip training, you can download pre-trained weights directly from Hugging Face:
+
 ```bash
 huggingface-cli download doudin404/splice --local-dir ./checkpoints --local-dir-use-symlinks False
-```
-### 3. Inference & Demo
-To run the interactive demo, you can either use your newly trained weights or download our pre-trained checkpoints from [Insert Link Here].
-* Update the configuration file `config/ui/real.yaml` to point to the correct checkpoint paths:
-```yaml
-model_path: ./checkpoints/splice.ckpt
-adjust_path: ./checkpoints/fry/all_data.ckpt
-pose_path: ./checkpoints/fry/all_pose.ckpt
-```
-* Launch the demo interface:
-``` Bash
-python demo.py
+
 ```
 
+## 🧪 Testing & Inference
+
+Once you have trained or downloaded the checkpoints, you can evaluate the models using the following scripts:
+
+* **View Reconstruction Results:**
+```bash
+python pred.py
+
+```
+
+
+* **View Random Generation Results:**
+```bash
+python samplediff.py
+
+```
+
+
+* **Interactive Demo:**
+Launch the interactive GUI window. (Note: Operation methods and controls are similar to the [SPAGHETTI](https://github.com/amirhertz/spaghetti) project).
+```bash
+python demo.py
+
+```
+
+
+
 ---
-## 📑 Citation
-If you find this work or code useful for your research, please cite our paper:
-```
-@article{zhou2025splice,
-  title={SPLICE: Part-Level 3D Shape Editing from Local Semantic Extraction to Global Neural Mixing},
-  author={Zhou, Jin and Yang, Hongliang and Xu, Pengfei and Huang, Hui},
-  journal={arXiv preprint arXiv:2512.04514},
-  year={2025}
-}
-```
-## 📄 License
-CC BY-NC 4.0
+
+Would you like me to add a section explaining the arguments for the `demo.py` or `train.py` scripts, or is this README good to go for your repository?

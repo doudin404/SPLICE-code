@@ -1,30 +1,17 @@
 from __future__ import annotations
-# import constants
+from typing import List, Tuple, Dict, Optional, Callable, Iterable, Union
+
 import vtk
-import vtk.util.numpy_support as numpy_support
-# from custom_types import *
-from ui import files_utils
-from shape_process.gm_transformer import get_rotation_matrix
-from net import model_func
-from ui import ui_utils, inference_processing, gaussian_status
-# import options
-from typing import (
-    Tuple,
-    List,
-    Union,
-    Callable,
-    Type,
-    Iterator,
-    Dict,
-    Set,
-    Optional,
-    Any,
-    Sized,
-    Iterable,
-)
+import vtkmodules.util.numpy_support as numpy_support
 import numpy as np
 import torch
+import torch.nn.functional as nnf
 
+from utils_spaghetti import files_utils, rotation_utils
+from model_spaghetti import gm_utils
+from ui import ui_utils, inference_processing, gaussian_status
+import options
+import constants
 
 
 def filter_by_inclusion(gaussian: gaussian_status.GaussianStatus) -> bool:
@@ -75,48 +62,17 @@ class GmmMeshStage:
         # else:
         #     self.arrows.turn_off()
         return True
-    
-    def retain_first_selection(self) -> int:
-        first_selected_index = -1
-        for i, gaussian in enumerate(self.gmm):
-            if gaussian.is_selected:
-                if first_selected_index == -1:
-                    # 保留第一个被选中的对象
-                    first_selected_index = i
-                else:
-                    # 翻转其他被选中的对象状态
-                    gaussian.toggle_selection()
-
-        # 如果有选中的对象，则返回其索引，否则返回 -1
-        return first_selected_index
 
     def toggle_inclusion_by_id(self, g_id: int, select: Optional[bool] = None) -> Tuple[bool, List[gaussian_status.GaussianStatus]]:
         toggled = []
-
-        # 获取目标高斯对象
-        target_gaussian = self.gmm[g_id]
-
-        # 切换该对象的包含状态
-        target_gaussian.toggle_inclusion(select)
-        toggled.append(target_gaussian)
-
-        # 检查是否在 symmetric_mode 模式下，如果是，则处理 twin
+        self.gmm[g_id].toggle_inclusion(select)
+        toggled.append(self.gmm[g_id])
         if self.symmetric_mode:
-            if target_gaussian.twin is not None and target_gaussian.twin.included != target_gaussian.included:
-                target_gaussian.twin.toggle_inclusion(select)
-                toggled.append(target_gaussian.twin)
-
-        # 处理 copy_group 的批量切换
-        if hasattr(target_gaussian, 'copy_group'):
-            for address in target_gaussian.copy_group:
-                if address in self.addresses_dict:
-                    copy_gaussian = self.gmm[self.addresses_dict[address]]
-                    if copy_gaussian.included != target_gaussian.included:  # 如果复制体的状态不同步
-                        copy_gaussian.toggle_inclusion(select)
-                        toggled.append(copy_gaussian)
-
+            if self.gmm[g_id].twin is not None and self.gmm[g_id].twin.included != self.gmm[g_id].included:
+                self.gmm[g_id].twin.toggle_inclusion(select)
+                toggled.append(self.gmm[g_id].twin)
         return True, toggled
-    
+
     def toggle_inclusion(self, object_id: str) -> Tuple[bool, List[gaussian_status.GaussianStatus]]:
         if object_id in self.addresses_dict:
             return self.toggle_inclusion_by_id(self.addresses_dict[object_id])
@@ -145,31 +101,24 @@ class GmmMeshStage:
             return True
         return False
 
-    def get_gmm(self,all_gmm=False):
-        raw_gmm = [g.get_raw_data() for g in self.gmm if (g.included or all_gmm)]
-        # phi = torch.tensor([g[0] for g in raw_gmm], dtype=torch.float32).view(1, 1, -1)
-        #phi = torch.from_numpy(self.raw_gmm[0]).view(1, 1, -1).float()
-        phi = torch.tensor([g[0] for g in raw_gmm]).view(1, 1, -1).float()
+    def get_gmm(self) -> Tuple[Union[Tuple[torch.Tensor, ...], List[torch.Tensor]], torch.Tensor]:
+        raw_gmm = [g.get_raw_data() for g in self.gmm if g.included]
+        # 如果没有任何被包含的 Gaussian，就返回空的张量
+        if len(raw_gmm) == 0:
+            return None,None
+        # 如果 raw_gmm 非空，就按原来逻辑构造各个张量
+        # phi 的值从 raw_gmm 的第 0 项提取
+        phi = torch.tensor([g[0] for g in raw_gmm], dtype=torch.float32).view(1, 1, -1)
+        # mu 从 raw_gmm 的第 1 项构建，并合并后 reshape 为 (1,1,K,3)
         mu = torch.stack([torch.from_numpy(g[1]).float() for g in raw_gmm], dim=0).view(1, 1, -1, 3)
+        # p 从 raw_gmm 的第 3 项构建，并合并后 reshape 为 (1,1,K,3,3)
         p = torch.stack([torch.from_numpy(g[3]).float() for g in raw_gmm], dim=0).view(1, 1, -1, 3, 3)
+        # eigen 从 raw_gmm 的第 2 项构建，并合并后 reshape 为 (1,1,K,3)
         eigen = torch.stack([torch.from_numpy(g[2]).float() for g in raw_gmm], dim=0).view(1, 1, -1, 3)
-        gmm = mu, p,phi, eigen
-        included = torch.tensor([g.gaussian_id for g in self.gmm if (g.included or all_gmm)], dtype=torch.int64)
-        selected =torch.tensor([g.is_selected for g in self.gmm if (g.included or all_gmm)], dtype=torch.int64)
-        #print(self.gmm)
-        return gmm, included,selected
-    
-    def set_gmm(self, gmm, included,seleceted=None,all_included=None):
-        self.remove_all()
-        gmm  =  [gmm[i][0,0].numpy() for i in [2,0,3,1]]
-        for i, gaussian in enumerate(zip(*gmm)):
-            gaussian = gaussian_status.GaussianStatus(gaussian, (self.gmm_id, i), False, self.view_style,self.render, 1/included.shape[0])
-            gaussian.gaussian_id=included[i].tolist()
-            self.gmm.append(gaussian)
-            new_address = gaussian.get_address()
-            #gaussian.is_selected=seleceted[0,0,i].item()==1
-            # 更新 addresses_dict
-            self.addresses_dict[new_address] = i
+        gmm = (mu, p, phi, eigen)
+        # included 保留所有被包含的 gaussian_id
+        included = torch.tensor([g.gaussian_id for g in self.gmm if g.included], dtype=torch.int64)
+        return gmm, included
 
     def reset(self):
         for g in self.gmm:
@@ -207,13 +156,25 @@ class GmmMeshStage:
     def add_gaussians(self, gaussians: List[gaussian_status.GaussianStatus]) -> List[str]:
         new_addresses = []
         for i, gaussian in enumerate(gaussians):
-            gaussian_copy = gaussian.copy(self.render, self.view_style)#, is_selected=False)
+            gaussian_copy = gaussian.copy(self.render, self.view_style, is_selected=False)
             self.gmm.append(gaussian_copy)
             new_addresses.append(gaussian_copy.get_address())
         self.addresses_dict = {self.gmm[i].get_address(): i for i in range(len(self.gmm))}
         return new_addresses
     
     def copy_gaussians(self, original_addresses: List[str]) -> List[str]:
+        """
+        复制指定地址列表中的高斯对象，并返回新创建的高斯对象地址列表。
+        
+        该方法会为每个原始地址创建对应高斯对象的副本，将其添加到gmm列表中，
+        并在原始对象和副本之间建立共享关系。
+        
+        Args:
+            original_addresses: 要复制的高斯对象的地址列表
+
+        Returns:
+            List[str]: 新创建的高斯对象的地址列表
+        """
         new_addresses = []
 
         for original_address in original_addresses:
@@ -238,15 +199,21 @@ class GmmMeshStage:
                 self.make_copies(original_address, new_addresses)
 
         return new_addresses
-
-    def make_twins(self, address_a: str, address_b: str):
-        if address_a in self.addresses_dict and address_b in self.addresses_dict:
-            gaussian_a, gaussian_b = self.gmm[self.addresses_dict[address_a]], self.gmm[self.addresses_dict[address_b]]
-            gaussian_a.twin = gaussian_b
-            gaussian_b.twin = gaussian_a
-
-
-    def make_copies(self, original_address: str, new_addresses: List[str]):####
+    
+    def make_copies(self, original_address: str, new_addresses: List[str]):
+        """
+        建立原始高斯对象和其复制体之间的共享关系。
+        
+        该方法通过创建和维护copy_group属性，将原始对象和所有复制体关联在一起，
+        使它们共享同一个对象组。这允许对一个对象的操作可以同步到所有相关对象。
+        
+        Args:
+            original_address: 原始高斯对象的地址
+            new_addresses: 复制体高斯对象的地址列表
+        
+        Returns:
+            None
+        """
         if original_address not in self.addresses_dict:
             return  # 如果原始对象不存在于 addresses_dict 中，直接返回
 
@@ -271,21 +238,18 @@ class GmmMeshStage:
                 # 让新复制体的 copy_group 引用同一个集合
                 new_gaussian.copy_group = original_gaussian.copy_group
 
-    def split_mesh_by_gmm(self, mesh):
+    def make_twins(self, address_a: str, address_b: str):
+        if address_a in self.addresses_dict and address_b in self.addresses_dict:
+            gaussian_a, gaussian_b = self.gmm[self.addresses_dict[address_a]], self.gmm[self.addresses_dict[address_b]]
+            gaussian_a.twin = gaussian_b
+            gaussian_b.twin = gaussian_a
+
+    def split_mesh_by_gmm(self, mesh) -> Dict[int, torch.Tensor]:
         faces_split = {}
         mu, p, phi, _ = self.get_gmm()[0]
-
         eigen = torch.stack([torch.from_numpy(g.get_view_eigen()).float() for g in self.gmm if g.included], dim=0).view(1, 1, -1, 3)
-
-        # from shape_process.visualizationManager import VisualizationManager
-        # vm=VisualizationManager()
-        # vm.add_points(mesh[0])
-        # for i in range(phi.shape[-1]):
-        #     vm.add_gmm((mu[0,0,i],p[0,0,i],eigen[0,0,i]))
-        # vm.show()
-
         gmm = mu, p, phi, eigen
-        faces_split_ = model_func.split_mesh_by_gmm(mesh, gmm)
+        faces_split_ = gm_utils.split_mesh_by_gmm(mesh, gmm)
         counter = 0
         for i in range(len(self.gmm)):
             if self.gmm[i].disabled:
@@ -296,7 +260,7 @@ class GmmMeshStage:
         return faces_split
 
     @staticmethod
-    def get_part_face(mesh, faces_inds):
+    def get_part_face(mesh: Tuple[np.ndarray, np.ndarray], faces_inds: torch.Tensor) -> Tuple[Tuple[torch.Tensor, Optional[torch.Tensor]], torch.Tensor]:
         mesh = mesh[0], torch.from_numpy(mesh[1]).long()
         mask = faces_inds.ne(0)
         faces = mesh[1][mask]
@@ -356,7 +320,7 @@ class GmmMeshStage:
                     self.votes[address] += 1
 
     @staticmethod
-    def faces_to_vtk_faces(faces):
+    def faces_to_vtk_faces(faces: Union[torch.Tensor, np.ndarray]):
         if type(faces) is torch.Tensor:
             faces = faces.detach().cpu().numpy()
         cells_npy = np.column_stack(
@@ -365,7 +329,7 @@ class GmmMeshStage:
         faces_vtk.SetCells(faces.shape[0], numpy_support.numpy_to_vtkIdTypeArray(cells_npy))
         return faces_vtk
 
-    def get_mesh_part(self, vs: vtk.vtkPoints, faces) -> Optional[vtk.vtkPolyData]:
+    def get_mesh_part(self, vs: vtk.vtkPoints, faces: Optional[Union[torch.Tensor, np.ndarray]]) -> Optional[vtk.vtkPolyData]:
         if faces is not None:
             # actor_mesh = vtk.vtkActor()
             mesh = vtk.vtkPolyData()
@@ -385,16 +349,42 @@ class GmmMeshStage:
         gmms = []
         if len(self.raw_gmm) > 0:
             phi = self.raw_gmm[0]
-            # phi = np.exp(phi)
-            # phi = phi / phi.sum()
+            phi = np.exp(phi)
+            phi = phi / phi.sum()
             for i, gaussian in enumerate(zip(*self.raw_gmm)):
-                if gaussian[-1]:
-                    gaussian = gaussian_status.GaussianStatus(gaussian, (self.gmm_id, i), False, self.view_style,
-                                                            self.render, phi[i])
-                    gmms.append(gaussian)
+                gaussian = gaussian_status.GaussianStatus(gaussian, (self.gmm_id, i), False, self.view_style,
+                                                          self.render, phi[i])
+                gmms.append(gaussian)
         return gmms
 
-    def add_mesh(self, base_mesh, split_mesh: bool = True, for_slider: bool = True):
+    def add_gmm_from_splice_gaussians(self)-> List[gaussian_status.GaussianStatus]:
+        gmms = []
+        if len(self.raw_gmm) > 0:
+            phi = 1.0
+            for i, gaussian in enumerate(zip(*self.raw_gmm)):
+                if gaussian[0] == 0.0:  # 根据存在标记忽略 gaussian
+                    continue
+                gaussian = gaussian_status.GaussianStatus(gaussian, (self.gmm_id, i), False, self.view_style,
+                                                          self.render, phi)
+                gmms.append(gaussian)
+        return gmms
+
+    def add_gmm_from_splice_spheres(self) -> List[gaussian_status.GaussianStatus]:
+        gmms = []
+        for i, sphere in enumerate(self.raw_spheres):
+            sphere: torch.Tensor
+            x, y, z, r = sphere
+            phi = 1.0  # 权重，小球表示为 1
+            mu = np.array([x, y, z])  # 表示小球位置
+            eigen = np.array([r, r, r])  # 表示小球半径
+            p = np.array([[1, 0, 0],[0, 1, 0], [0, 0, 1]])  # 表示小球的旋转矩阵
+
+            gaussian = (phi, mu, eigen, p)
+            gaussian = gaussian_status.GaussianStatus(gaussian, (self.gmm_id, i), False, self.view_style, self.render, phi)
+            gmms.append(gaussian)
+        return gmms
+
+    def add_mesh(self, base_mesh: Tuple[torch.Tensor, Optional[torch.Tensor]], split_mesh: bool = True, for_slider: bool = True):
         if base_mesh is not None:
             vs_vtk = vtk.vtkPoints()
             self.vs = base_mesh[0]
@@ -415,9 +405,9 @@ class GmmMeshStage:
     def set_brush(self, is_draw: bool):
         self.render.set_brush(is_draw)
 
-    def replace_mesh(self, mesh):
-        self.mesh = torch.from_numpy(mesh[0]).float(), torch.from_numpy(mesh[1]).long()
-        self.add_mesh(self.mesh, for_slider=False)
+    def replace_mesh(self, mesh: Optional[Tuple[np.ndarray, np.ndarray]]):
+        mesh = torch.from_numpy(mesh[0]).float(), torch.from_numpy(mesh[1]).long()
+        self.add_mesh(mesh, for_slider=False)
         # if mesh is None:
         #     return
         # else:
@@ -430,17 +420,17 @@ class GmmMeshStage:
         #     self.to_init = True
         #     self.render.AddActor(self.actor)
 
-    def init_mesh_pos(self, vs):
+    def init_mesh_pos(self, vs: torch.Tensor):
         vs = vs.clone()
-        r_a = get_rotation_matrix(150, 1, degree=True)
-        r_b = get_rotation_matrix(-15, 0, degree=True)
+        r_a = rotation_utils.get_rotation_matrix(150, 1, degree=True)
+        r_b = rotation_utils.get_rotation_matrix(-15, 0, degree=True)
         r = torch.from_numpy(np.einsum('km,mn->kn', r_b, r_a)).float()
         vs = torch.einsum('ad,nd->na', r, vs)
         vs[:, 0] += self.gmm_id * 2
         return vs
 
     @staticmethod
-    def mesh_to_polydata(mesh, source: Optional[vtk.vtkPolyData] = None) -> vtk.vtkPolyData:
+    def mesh_to_polydata(mesh: Union[Tuple[torch.Tensor, Optional[torch.Tensor]], Tuple[np.ndarray, np.ndarray]], source: Optional[vtk.vtkPolyData] = None) -> vtk.vtkPolyData:
         if source is None:
             source = vtk.vtkPolyData()
         vs, faces = mesh
@@ -478,26 +468,46 @@ class GmmMeshStage:
     def pick(self, actor_address: str) -> bool:
         return actor_address in self.addresses_dict
 
-    def __init__(self, cfg, shape_path: List[str], render: ui_utils.CanvasRender, render_number: int,
+    def __init__(self, opt: options.Options, shape_path: List[str], render: ui_utils.CanvasRender, render_number: int,
                  view_style: ui_utils.ViewStyle, to_init=True):
         self.view_style = view_style
         self.votes = {}
         self.shape_id = shape_path[1]
         self.gmm_id = render_number
         self.render = render
-        self.symmetric_mode = False
+        self.symmetric_mode = sum(opt.symmetric) > 0 and False
         self.selected = None
         self.offset = render_number
         # self.arrows = arrows.ArrowManger(render)
-        if self.shape_id != '-1':
+        self.model_name: str = opt.model_name
+        if self.shape_id != '-1' and self.model_name == "spaghetti":
             self.base_mesh = files_utils.load_mesh( ''.join(shape_path))
-            self.raw_gmm = files_utils.load_gmm(f'{shape_path[0]}/{shape_path[1]}.txt', as_np=True)
+            self.raw_gmm = files_utils.load_gmm(f'{shape_path[0]}/{shape_path[1]}.txt', as_np=True)[:-1]
+        elif self.shape_id != '-1' and self.model_name == "splice-v1.5":
+            self.base_mesh = files_utils.load_mesh(''.join(shape_path))
+            self.raw_gmm = files_utils.load_gmm(f'{shape_path[0]}/{shape_path[1]}.txt', as_np=True)[:-1]
+        elif self.shape_id != '-1' and self.model_name == "splice":
+            self.base_mesh = files_utils.load_mesh(''.join(shape_path))
+            self.raw_codes = files_utils.load_splice_codes(f"{shape_path[0]}/{shape_path[1]}_codes.pt")
+            self.raw_spheres = files_utils.load_splice_spheres(f"{shape_path[0]}/{shape_path[1]}_spheres.pt")
         else:
             self.base_mesh = None
             self.raw_gmm = []
+            self.raw_spheres = torch.tensor([])
+            self.raw_codes = torch.tensor([])
+        
         self.to_init = to_init
         self.is_changed = False
-        self.gmm: List[gaussian_status.GaussianStatus] = self.add_gmm()
+        
+        if self.model_name == "spaghetti":
+            self.gmm: List[gaussian_status.GaussianStatus] = self.add_gmm()
+        elif self.model_name == "splice-v1.5":
+            self.gmm: List[gaussian_status.GaussianStatus] = self.add_gmm_from_splice_gaussians()
+        elif self.model_name == "splice":
+            self.gmm: List[gaussian_status.GaussianStatus] = self.add_gmm_from_splice_spheres()
+        else:
+            raise ValueError("Unsupported model name")
+
         self.vs = self.faces = None
         self.add_mesh(self.base_mesh)
         self.addresses_dict: Dict[str, int] = {self.gmm[i].get_address(): i for i in range(len(self.gmm))}
@@ -564,8 +574,8 @@ class GmmStatuses:
                 return gmm
         return None
 
-    def __init__(self, cfg, shape_paths: List[List[str]], render, view_styles: List[ui_utils.ViewStyle]):
-        self.gmms = [GmmMeshStage(cfg, shape_path, render, i, view_style) for i, (shape_path, view_style) in
+    def __init__(self, opt: options.Options, shape_paths: List[List[str]], render, view_styles: List[ui_utils.ViewStyle]):
+        self.gmms = [GmmMeshStage(opt, shape_path, render, i, view_style) for i, (shape_path, view_style) in
                      enumerate(zip(shape_paths, view_styles))]
 
 
@@ -631,7 +641,7 @@ class MeshGmmStatuses(GmmStatuses):
         return False
         # self.all_info[side] = gaussian_inds
 
-    def request_gmm(self):
+    def request_gmm(self) -> Tuple[Union[Tuple[torch.Tensor, ...], List[torch.Tensor]], torch.Tensor]:
         gmm, included = self.main_gmm.get_gmm()
         return gmm, included
 
@@ -659,7 +669,7 @@ class MeshGmmStatuses(GmmStatuses):
                     ui_utils.EditDirection.Y_Axis: 2,
                     ui_utils.EditDirection.Z_Axis: 1}[self.edit_direction]
 
-        def get_delta_translation(self, mouse_pos):
+        def get_delta_translation(self, mouse_pos: torch.Tensor) -> np.ndarray:
             delta_3d = np.zeros(3)
             axis = self.moving_axis
             vec = mouse_pos - self.origin_mouse
@@ -667,27 +677,27 @@ class MeshGmmStatuses(GmmStatuses):
             delta_3d[axis] = delta
             return delta_3d
 
-        def get_delta_rotation(self, mouse_pos):
+        def get_delta_rotation(self, mouse_pos: torch.Tensor) -> np.ndarray:
             projections = []
             for pos in (self.origin_mouse, mouse_pos):
                 vec = pos - self.transition_origin_2d
                 projection = torch.einsum('d,da->a', vec, self.dir_2d)
                 projection[self.moving_axis] = 0
-                projection = torch.nn.functional.normalize(projection, p=2, dim=0)
+                projection = nnf.normalize(projection, p=2, dim=0)
                 projections.append(projection)
             sign = (projections[0][(self.moving_axis + 2) % 3] * projections[1][(self.moving_axis + 1) % 3]
                     - projections[0][(self.moving_axis + 1) % 3] * projections[1][(self.moving_axis + 2) % 3] ).sign()
             angle = (torch.acos(torch.einsum('d,d', *projections)) * sign).item()
             return ui_utils.get_rotation_matrix(angle, self.moving_axis)
 
-        def get_delta_scaling(self, mouse_pos):
+        def get_delta_scaling(self, mouse_pos: torch.Tensor) -> np.ndarray:
             raise NotImplementedError
 
         def toggle_edit_direction(self, direction: ui_utils.EditDirection):
             self.edit_direction = direction
 
         @to_local
-        def get_transition(self, mouse_pos) -> ui_utils.Transition:
+        def get_transition(self, mouse_pos: Optional[torch.Tensor]) -> ui_utils.Transition:
             transition = ui_utils.Transition(self.transition_origin.numpy(), self.transition_type)
             if mouse_pos is not None:
                 if self.transition_type is ui_utils.EditType.Translating:
@@ -699,7 +709,7 @@ class MeshGmmStatuses(GmmStatuses):
             return transition
 
         @to_local
-        def init_transition(self, mouse_pos: Tuple[int, int], transition_origin, transition_type: ui_utils.EditType):
+        def init_transition(self, mouse_pos: Tuple[int, int], transition_origin: torch.Tensor, transition_type: ui_utils.EditType):
             transform_mat_vtk = self.camera.GetViewTransformMatrix()
             dir_2d = torch.zeros(3, 4)
             for i in range(3):
@@ -711,7 +721,7 @@ class MeshGmmStatuses(GmmStatuses):
             self.transition_origin_2d = transition_origin_2d[:2] / transition_origin_2d[-1].abs()
             # print(f"<{self.transition_origin[0]}, {self.transition_origin[1]}>")
             # print(mouse_pos)
-            self.origin_mouse, self.dir_2d = mouse_pos,  torch.nn.functional.normalize(dir_2d[:2, :3], p=2, dim=1)
+            self.origin_mouse, self.dir_2d = mouse_pos,  nnf.normalize(dir_2d[:2, :3], p=2, dim=1)
             self.transition_type = transition_type
 
         @property
@@ -761,11 +771,11 @@ class MeshGmmStatuses(GmmStatuses):
             is_changed = True
         return is_changed
 
-    def __init__(self, cfg, shape_paths: List[List[str]], render, view_styles: List[ui_utils.ViewStyle],
+    def __init__(self, opt: options.Options, shape_paths: List[List[str]], render, view_styles: List[ui_utils.ViewStyle],
                  with_model: bool):
-        super(MeshGmmStatuses, self).__init__(cfg, shape_paths, render, view_styles)
+        super(MeshGmmStatuses, self).__init__(opt, shape_paths, render, view_styles)
         if with_model:
-            self.model_process = inference_processing.InferenceProcess(cfg, self.main_stage.replace_mesh,
+            self.model_process = inference_processing.InferenceProcess(opt, self.main_stage.replace_mesh,
                                                                        self.request_gmm,
                                                                        shape_paths)
         else:
@@ -796,25 +806,9 @@ class MeshGmmUnited(MeshGmmStatuses):
                         self.make_twins(toggled, new_addresses)
                     else:
                         addresses = [gaussian.get_address() for gaussian in toggled]
-                        group_addresses = set()
-
-                        # 收集所有与 toggled 中每个对象共享 copy_group 的地址
+                        addresses = list(filter(lambda x: x in self.stage_mapper, addresses))
+                        self.main_gmm.remove_gaussians([self.stage_mapper[address] for address in addresses])
                         for address in addresses:
-                            if address in self.stage_mapper:
-                                gaussian = self.gmm[self.stage_mapper[address]]
-                                if hasattr(gaussian, 'copy_group'):
-                                    group_addresses.update(gaussian.copy_group)
-                                else:
-                                    group_addresses.add(address)
-
-                        # 过滤掉不在 stage_mapper 中的地址
-                        group_addresses = list(filter(lambda x: x in self.stage_mapper, group_addresses))
-
-                        # 从 main_gmm 中删除所有 copy_group 对象
-                        self.main_gmm.remove_gaussians([self.stage_mapper[address] for address in group_addresses])
-
-                        # 从 stage_mapper 中删除这些地址的映射
-                        for address in group_addresses:
                             del self.stage_mapper[address]
             return len(changed) > 0
         else:
@@ -862,39 +856,39 @@ class MeshGmmUnited(MeshGmmStatuses):
     def main_stage(self) -> GmmMeshStage:
         return self.main_gmm_
 
-    def __init__(self, cfg, gmm_paths: List[int], renders_right, view_styles: List[ui_utils.ViewStyle],
+    def __init__(self, opt: options.Options, gmm_paths: List[int], renders_right, view_styles: List[ui_utils.ViewStyle],
                  main_render: ui_utils.CanvasRender, with_model: bool):
-        self.main_gmm_ = GmmMeshStage(cfg, -1, main_render, len(gmm_paths), view_styles[-1], to_init=False)
-        super(MeshGmmUnited, self).__init__(cfg, gmm_paths, renders_right, view_styles[:-1], with_model)
+        self.main_gmm_ = GmmMeshStage(opt, -1, main_render, len(gmm_paths), view_styles[-1], to_init=False)
+        super(MeshGmmUnited, self).__init__(opt, gmm_paths, renders_right, view_styles[:-1], with_model)
         self.main_render = main_render
         self.reset()
         self.stage_mapper: Dict[str, str] = {}
 
 
-# def main():
-#     opt = options.Options(tag="chairs_sym_hard").load()
-#     model = train_utils.model_lc(opt)[0]
-#     model = model.to("cpu")
-#     colors = torch.rand(opt.num_gaussians, 3)
-#     shape_nums = 1103, 1637, 2954, 3631, 4814
-#     for shape_num in shape_nums:
-#         mesh = files_utils.load_mesh(f"{opt.cp_folder}/occ/samples_{shape_num}")
-#         gmm = files_utils.load_gmm(f"{opt.cp_folder}/gmms/samples_{shape_num}")
-#         vs, faces = mesh
-#         phi, mu, eigen, p, _ = [item.unsqueeze(0).unsqueeze(0) for item in gmm]
-#         gmm = mu, p, phi, eigen
-#         attention = model.get_attention(vs.unsqueeze(0), torch.tensor([shape_num], dtype=torch.int64))[-4:]
-#         # _, supports = model_func.hierarchical_gm_log_likelihood_loss([gmm], vs.unsqueeze(0), get_supports=True)
-#         # supports = supports[0][0]
-#         supports = torch.cat(attention, dim=0)
-#         supports = supports.mean(-1).mean(0)
-#         label = supports.argmax(1)
-#         colors_ = colors[label]
-#         files_utils.export_mesh((vs, faces), f"{constants.OUT_ROOT}/{opt.tag}_{shape_num}b", colors=colors_)
-#     return 0
+def main():
+    opt = options.Options(tag="chairs_sym_hard").load()
+    model = train_utils.model_lc(opt)[0]
+    model = model.to(torch.device('cpu'))
+    colors = torch.rand(opt.num_gaussians, 3)
+    shape_nums = 1103, 1637, 2954, 3631, 4814
+    for shape_num in shape_nums:
+        mesh = files_utils.load_mesh(f"{opt.cp_folder}/occ/samples_{shape_num}")
+        gmm = files_utils.load_gmm(f"{opt.cp_folder}/gmms/samples_{shape_num}")
+        vs, faces = mesh
+        phi, mu, eigen, p, _ = [item.unsqueeze(0).unsqueeze(0) for item in gmm]
+        gmm = mu, p, phi, eigen
+        attention = model.get_attention(vs.unsqueeze(0), torch.tensor([shape_num], dtype=torch.int64))[-4:]
+        # _, supports = gm_utils.hierarchical_gm_log_likelihood_loss([gmm], vs.unsqueeze(0), get_supports=True)
+        # supports = supports[0][0]
+        supports = torch.cat(attention, dim=0)
+        supports = supports.mean(-1).mean(0)
+        label = supports.argmax(1)
+        colors_ = colors[label]
+        files_utils.export_mesh((vs, faces), f"{constants.OUT_ROOT}/{opt.tag}_{shape_num}b", colors=colors_)
+    return 0
 
 
 if __name__ == '__main__':
 
-    from utils import train_utils
+    from utils_spaghetti import train_utils
     exit(main())

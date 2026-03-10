@@ -1,7 +1,0 @@
-class: none
-shape_dir: input_shape
-model_path: ./checkpoints/正式4,正则化.ckpt #飞机.ckpt
-adjust_path: ./checkpoints/fry/all_data.ckpt #only_chair.ckpt
-adjust_sigma: 0.2202
-pose_path: ./checkpoints/fry/all_pose.ckpt
-pose_sigma: 0.33

@@ -1,26 +1,12 @@
-# import torch
-import vtk
-from ui import files_utils
 import functools
-import matplotlib.pyplot as plt
-from enum import Enum
+import enum
 import numpy as np
 import torch
-from typing import (
-    Tuple,
-    List,
-    Union,
-    Callable,
-    Type,
-    Iterator,
-    Dict,
-    Set,
-    Optional,
-    Any,
-    Sized,
-    Iterable,
-)
+import vtk
+import matplotlib.pyplot as plt
+from typing import Union, Tuple, List, Optional, Callable, Any
 
+from utils_spaghetti import files_utils
 
 
 bg_source_color = (152, 181, 234)
@@ -32,20 +18,21 @@ default_colors = [(82, 108, 255), (160, 82, 255), (255, 43, 43), (255, 246, 79),
                   (153, 227, 107), (58, 186, 92), (8, 243, 255), (240, 136, 0)]
 
 
-class SmoothingMethod(Enum):
+class SmoothingMethod(enum.Enum):
     Laplace = "laplace"
     Taubin = "taubin"
 
 
-class EditType(Enum):
+class EditType(enum.Enum):
     Pondering = 'pondering'
     Translating = 'translating'
     Rotating = 'rotating'
     Scaling = 'scaling'
     Marking = 'marking'
+    Copying = 'copying'
 
 
-class EditDirection(Enum):
+class EditDirection(enum.Enum):
     X_Axis = 'axis_x'
     Y_Axis = 'axis_y'
     Z_Axis = 'axis_z'
@@ -116,7 +103,7 @@ def rgb_to_rgba_float(color: RGB_COLOR, alpha: float) -> RGBA_FLOAT_COLOR:
     return color
 
 
-class Buttons(Enum):
+class Buttons(enum.Enum):
     translate = 'T'
     rotate = 'R'
     stretch = 'S'
@@ -139,16 +126,16 @@ class ViewStyle:
 
 class Transition:
 
-    def __init__(self, transition_origin, transition_type: EditType):
-        self.transition_origin = transition_origin
-        self.transition_type = transition_type
-        self.translation = np.zeros(3)
-        self.rotation = np.eye(3)
+    def __init__(self, transition_origin: np.ndarray, transition_type: EditType):
+        self.transition_origin: np.ndarray = transition_origin
+        self.transition_type: np.ndarray = transition_type
+        self.translation: np.ndarray = np.zeros(3)
+        self.rotation: np.ndarray = np.eye(3)
         self.scale=np.zeros(3)
 
 
 @functools.lru_cache(10)
-def get_rotation_matrix(theta: float, axis: float) :
+def get_rotation_matrix(theta: float, axis: float) -> np.ndarray:
     rotate_mat = np.eye(3)
     rotate_mat[axis, axis] = 1
     cos_theta, sin_theta = np.cos(theta), np.sin(theta)
@@ -460,14 +447,11 @@ class CanvasRender(vtk.vtkRenderer):
 
 
 
-
-
-
 def init_palettes(cmap='Spectral'):
     colors = {}
     color_map = plt.cm.get_cmap(cmap)
 
-    def get_palette(num_colors: int):
+    def get_palette(num_colors: int) -> torch.Tensor:
         nonlocal colors, color_map
         if num_colors == 1:
             colors[num_colors] = torch.tensor([.45])
