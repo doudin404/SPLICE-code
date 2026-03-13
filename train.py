@@ -7,45 +7,56 @@ from model.SPLICE_model import SPLICE_Module
 import multiprocessing as mp
 import math
 
-# ----------------- 运行示例 -----------------
+# ----------------- Execution Entry Point -----------------
 if __name__ == '__main__':
+    # Set matrix multiplication precision for better performance on Ampere+ GPUs
     torch.set_float32_matmul_precision('high')
-    # 日志记录器
+
+    # Logger setup
     tb_logger = TensorBoardLogger(save_dir="logs/splice_log", name="partnet")
 
-    # 数据模块
-    files = 'data/data_Chair'  # 替换为实际路径
-    dm = VoxelRayDataModule(root_dir=files, batch_size=10, num_workers=5,data_name="partnet")
-    # 定义模型
-    model = SPLICE_Module() #load_from_checkpoint("checkpoints_splice/best-v1.ckpt",lr=1e-3)
-
-    # Checkpoint 回调：保存最佳模型和最后一次训练模型
-    checkpoint_callback = ModelCheckpoint(
-        dirpath="checkpoints_splice",          # 保存文件夹
-        filename="best",                # 最佳模型文件名前缀
-        save_top_k=1,                     # 只保留最优模型
-        monitor="total",             # 监控指标，可根据需改
-        mode="min",                     # 指标越小越好
-        save_last=True                    # 额外保存最后一次训练的模型
+    # Data module initialization
+    files = 'data/data_Chair'  # Replace with actual data path
+    dm = VoxelRayDataModule(
+        root_dir=files, 
+        batch_size=10, 
+        num_workers=5, 
+        data_name="partnet"
     )
 
-    # Trainer：添加回调
+    # Model definition
+    # model = SPLICE_Module.load_from_checkpoint("checkpoints_splice/best-v1.ckpt", lr=1e-3)
+    model = SPLICE_Module()
+
+    # Checkpoint Callback: Save the best model based on a metric and the latest state
+    checkpoint_callback = ModelCheckpoint(
+        dirpath="checkpoints_splice",       # Directory to save checkpoints
+        filename="best",                    # Filename prefix for the best model
+        save_top_k=1,                       # Keep only the best model
+        monitor="total",                    # Metric to monitor (change as needed)
+        mode="min",                         # Optimization mode (minimize metric)
+        save_last=True                      # Additionally save the latest model state
+    )
+
+    # Trainer configuration
     trainer = pl.Trainer(
         max_epochs=100000,
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
-        devices=7,#[7],
+        devices=7,                          # Number of GPUs to use (or list of indices)
         logger=tb_logger,
         callbacks=[checkpoint_callback]
     )
 
-    # 如果存在已保存的 checkpoint，自动恢复训练
-    last_ckpt = "checkpoints_splice/last-v8.ckpt"#splice-1.5-03001627_chair.ckpt"
+    # Resume training if a checkpoint exists
+    last_ckpt = "checkpoints_splice/last-v8.ckpt" # Example: "splice-1.5-03001627_chair.ckpt"
+    
     if last_ckpt:
-        print(f"加载已有 checkpoint: {last_ckpt}")
-        trainer.fit(model,  datamodule=dm, ckpt_path=last_ckpt)
+        print(f"Resuming training from checkpoint: {last_ckpt}")
+        trainer.fit(model, datamodule=dm, ckpt_path=last_ckpt)
     else:
+        print("Starting training from scratch...")
         trainer.fit(model, datamodule=dm)
 
-    # 训练完成后，最佳和最后模型路径
-    print("最佳模型路径：", checkpoint_callback.best_model_path)
-    print("最后一次模型路径：", checkpoint_callback.last_model_path)
+    # Output paths after training completion
+    print("Best model path:", checkpoint_callback.best_model_path)
+    print("Latest model path:", checkpoint_callback.last_model_path)
