@@ -2,8 +2,10 @@ Official implementation of SPLICE: a part-level 3D shape editing framework based
 ---
 # SPLICE: Part-Level 3D Shape Editing from Local Semantic Extraction to Global Neural Mixing
 
+[![Project Page](https://img.shields.io/badge/Project-Page-success.svg)](https://doudin404.github.io/SPLICE-page/)
 [![arXiv](https://img.shields.io/badge/arXiv-2512.04514-b31b1b.svg)](https://arxiv.org/abs/2512.04514)
 [![Conference](https://img.shields.io/badge/Accepted-Pacific_Graphics_2025-blue.svg)]()
+
 ![](assets/teaser.png)
 > **SPLICE: Part-Level 3D Shape Editing from Local Semantic Extraction to Global Neural Mixing** <br>
 > Jin Zhou, Hongliang Yang, Pengfei Xu, Hui Huang <br>
