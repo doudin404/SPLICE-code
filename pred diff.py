@@ -7,28 +7,40 @@ from model.SPLICE_model import SPLICE_Module
 import multiprocessing as mp
 import math
 
-# ----------------- 运行示例 -----------------
+# ----------------- Execution Entry Point -----------------
 if __name__ == '__main__':
+    # Set matrix multiplication precision for better performance on modern GPUs
     torch.set_float32_matmul_precision('high')
 
-    # 数据模块
-    files = 'data/03001627_chair_test'  # 替换为实际路径
-    dm = VoxelRayDataModule(root_dir=files, batch_size=1, num_workers=5,data_name="partnet")
-    # 定义模型
-    model = SPLICE_Module(lr=1e-4,export_mode="DIFF",export_shape=False) #load_from_checkpoint("checkpoints_splice/best-v1.ckpt",lr=1e-3)
+    # Data module configuration
+    files = 'data/03001627_chair_test'  # Replace with the actual data path
+    dm = VoxelRayDataModule(
+        root_dir=files, 
+        batch_size=1, 
+        num_workers=5, 
+        data_name="partnet"
+    )
+    
+    # Model definition
+    # Initializing with specific learning rate and export settings
+    model = SPLICE_Module(
+        lr=1e-4, 
+        export_mode="DIFF", 
+        export_shape=False
+    )
 
-
-    # Trainer：添加回调
+    # Trainer configuration for inference/prediction
     trainer = pl.Trainer(
         max_epochs=1,
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
-        devices=[7],
+        devices=[7],  # Target GPU index
     )
 
-    # 如果存在已保存的 checkpoint，自动恢复训练
+    # Load from checkpoint and run prediction
     last_ckpt = "./checkpoints_splice/splice-1.5-v1.ckpt"
     if last_ckpt:
-        print(f"加载已有 checkpoint: {last_ckpt}")
-        trainer.predict(model,  datamodule=dm, ckpt_path=last_ckpt)
+        print(f"Loading existing checkpoint: {last_ckpt}")
+        trainer.predict(model, datamodule=dm, ckpt_path=last_ckpt)
     else:
+        print("No checkpoint found, proceeding with default weights.")
         trainer.predict(model, datamodule=dm)
