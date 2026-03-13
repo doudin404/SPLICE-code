@@ -8,53 +8,74 @@ import multiprocessing as mp
 import math
 
 def transform_data(data):
+    """
+    Apply random scaling and feature normalization to the input data.
+    """
+    # Generate a random scale factor between 0.8 and 1.2
     scale = torch.rand(1).item() * 0.4 + 0.8
-    data[:, 1:4] *= scale*5
-    data[:, 13:16] *= scale*5
-    data[:, 16:]*=0.1
-    data[:, 4:13]*=1
+    
+    # Scale specific coordinate or spatial features
+    data[:, 1:4] *= scale * 5
+    data[:, 13:16] *= scale * 5
+    
+    # Apply weight adjustments to other feature dimensions
+    data[:, 16:] *= 0.1
+    data[:, 4:13] *= 1
     return data
-# ----------------- 运行示例 -----------------
+
+# ----------------- Execution Entry Point -----------------
 if __name__ == '__main__':
+    # Optimize matrix multiplication precision for Ampere/Hopper GPUs
     torch.set_float32_matmul_precision('high')
-    # 日志记录器
+
+    # Logger configuration
     tb_logger = TensorBoardLogger(save_dir="logs/splice_log", name="partnet")
 
-    # 数据模块
-    files = 'data/chair_feats_5'  # 替换为实际路径
-    dm = DiffDataModule(data_dir=files, batch_size=256, num_workers=5,transform=transform_data)
-    # 定义模型
-    model = SPLICE_Diffusion()#.load_from_checkpoint("checkpoints_splice_diff/overfit_3.ckpt")#14 15
-
-    # Checkpoint 回调：保存最佳模型和最后一次训练模型
-    checkpoint_callback = ModelCheckpoint(
-        dirpath="checkpoints_splice_diff",          # 保存文件夹
-        filename="best_overfit_5",                # 最佳模型文件名前缀
-        save_top_k=1,                     # 只保留最优模型
-        monitor="val_loss",             # 监控指标，可根据需改
-        mode="min",                     # 指标越小越好
-        save_last=True                    # 额外保存最后一次训练的模型
+    # Data Module initialization
+    files = 'data/chair_feats_5'  # Replace with the actual data path
+    dm = DiffDataModule(
+        data_dir=files, 
+        batch_size=256, 
+        num_workers=5, 
+        transform=transform_data
     )
-    checkpoint_callback.CHECKPOINT_NAME_LAST = f"overfit_5"########################
 
-    # Trainer：添加回调
+    # Model definition
+    # model = SPLICE_Diffusion.load_from_checkpoint("checkpoints_splice_diff/overfit_3.ckpt")
+    model = SPLICE_Diffusion()
+
+    # Checkpoint Callback: Save the best model and the latest training state
+    checkpoint_callback = ModelCheckpoint(
+        dirpath="checkpoints_splice_diff",  # Directory for saving checkpoints
+        filename="best_overfit_5",           # Filename prefix for the best model
+        save_top_k=1,                        # Keep only the single best model
+        monitor="val_loss",                  # Metric to monitor
+        mode="min",                          # Optimization direction (minimize loss)
+        save_last=True                       # Save a 'last.ckpt' automatically
+    )
+    
+    # Manually setting the 'last' checkpoint filename pattern
+    checkpoint_callback.CHECKPOINT_NAME_LAST = f"overfit_5"
+
+    # Trainer configuration
     trainer = pl.Trainer(
-        max_epochs=-1,
+        max_epochs=-1,                       # Train indefinitely until manual stop
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
-        devices=[2,3],#[7],
+        devices=[2, 3],                      # Indices of GPUs to use
         logger=tb_logger,
         callbacks=[checkpoint_callback],
-        check_val_every_n_epoch=100
+        check_val_every_n_epoch=100          # Frequency of validation checks
     )
 
-    # 如果存在已保存的 checkpoint，自动恢复训练
+    # Resume training if a checkpoint path is provided
     last_ckpt = "checkpoints_splice_diff/overfit_5.ckpt"
     if last_ckpt:
-        print(f"加载已有 checkpoint: {last_ckpt}")
-        trainer.fit(model,  datamodule=dm, ckpt_path=last_ckpt)
+        print(f"Loading existing checkpoint: {last_ckpt}")
+        trainer.fit(model, datamodule=dm, ckpt_path=last_ckpt)
     else:
+        print("Starting training from scratch...")
         trainer.fit(model, datamodule=dm)
 
-    # 训练完成后，最佳和最后模型路径
-    print("最佳模型路径：", checkpoint_callback.best_model_path)
-    print("最后一次模型路径：", checkpoint_callback.last_model_path)
+    # Summary of saved model paths
+    print("Best model path:", checkpoint_callback.best_model_path)
+    print("Latest model path:", checkpoint_callback.last_model_path)
